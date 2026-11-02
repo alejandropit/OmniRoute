@@ -37,6 +37,7 @@ export interface EnrichedClaudeAuth extends ParsedClaudeAuth {
   organizationName: string | null;
   organizationType: string | null;
   rateLimitTier: string | null;
+  seatTier: string | null;
 }
 
 export interface CreateConnectionOptions {
@@ -97,6 +98,23 @@ export function parseAndValidateClaudeAuth(raw: unknown): ParsedClaudeAuth {
 
 // ──── Bootstrap enrichment ────────────────────────────────────────────────────
 
+// The live bootstrap nests the account under `oauth_account` (the shape
+// fetchClaudeBootstrap reads); a flat body is still accepted.
+function bootstrapAccount(raw: unknown): JsonRecord {
+  const doc = toRecord(raw);
+  return doc.oauth_account ? toRecord(doc.oauth_account) : doc;
+}
+
+// The account's own (seat) tier first: the org's base tier and the CLI file's
+// copy both differ from it once a Team admin moves seats.
+function bootstrapRateLimitTier(body: JsonRecord, fileTier: string | null): string | null {
+  return (
+    toNonEmptyString(body.user_rate_limit_tier) ||
+    toNonEmptyString(body.rate_limit_tier) ||
+    fileTier
+  );
+}
+
 export async function enrichWithBootstrap(
   parsed: ParsedClaudeAuth,
   // proxyConfig reserved for future authenticated-proxy support
@@ -109,6 +127,7 @@ export async function enrichWithBootstrap(
     organizationName: null,
     organizationType: null,
     rateLimitTier: parsed.rateLimitTier,
+    seatTier: null,
   };
 
   const controller = new AbortController();
@@ -131,23 +150,17 @@ export async function enrichWithBootstrap(
       return base;
     }
 
-    const body = toRecord(await res.json());
-
-    const accountUUID = toNonEmptyString(body.account_uuid);
-    const organizationUUID = toNonEmptyString(body.organization_uuid);
-    const organizationName = toNonEmptyString(body.organization_name);
-    const organizationType = toNonEmptyString(body.organization_type);
-    const rateLimitTier = toNonEmptyString(body.rate_limit_tier) || parsed.rateLimitTier;
-    const bootstrapEmail = toNonEmptyString(body.account_email);
+    const body = bootstrapAccount(await res.json());
 
     return {
       ...base,
-      accountUUID,
-      organizationUUID,
-      organizationName,
-      organizationType,
-      rateLimitTier,
-      email: parsed.email || bootstrapEmail,
+      accountUUID: toNonEmptyString(body.account_uuid),
+      organizationUUID: toNonEmptyString(body.organization_uuid),
+      organizationName: toNonEmptyString(body.organization_name),
+      organizationType: toNonEmptyString(body.organization_type),
+      rateLimitTier: bootstrapRateLimitTier(body, parsed.rateLimitTier),
+      seatTier: toNonEmptyString(body.seat_tier),
+      email: parsed.email || toNonEmptyString(body.account_email),
     };
   } catch {
     // Network error, timeout, or parse failure — best-effort; callers handle null fields
@@ -160,17 +173,34 @@ export async function enrichWithBootstrap(
 // ──── Lookup ──────────────────────────────────────────────────────────────────
 
 export async function findExistingClaudeConnection(
-  accountUUID: string
+  accountUUID: string,
+  organizationUUID: string | null = null
 ): Promise<JsonRecord | null> {
   const connections = await getProviderConnections({ provider: "claude" });
-  const lower = accountUUID.toLowerCase();
   return (
-    (connections.find((c) => {
-      const psd = toRecord((c as JsonRecord).providerSpecificData);
-      const stored = toNonEmptyString(psd.accountUUID);
-      return stored !== null && stored.toLowerCase() === lower;
-    }) as JsonRecord | undefined) ?? null
+    (connections.find((c) =>
+      isSameClaudeIdentity(
+        toRecord((c as JsonRecord).providerSpecificData),
+        accountUUID,
+        organizationUUID
+      )
+    ) as JsonRecord | undefined) ?? null
   );
+}
+
+// One accountUUID reaches its personal workspace and every Team org it belongs
+// to; the org separates them. Like isMatchingOauthIdentity, the org decides only
+// when both sides carry it.
+function isSameClaudeIdentity(
+  psd: JsonRecord,
+  accountUUID: string,
+  organizationUUID: string | null
+): boolean {
+  const stored = toNonEmptyString(psd.accountUUID);
+  if (stored === null || stored.toLowerCase() !== accountUUID.toLowerCase()) return false;
+  const storedOrg = toNonEmptyString(psd.organizationUUID)?.toLowerCase();
+  const org = organizationUUID?.toLowerCase();
+  return !org || !storedOrg || org === storedOrg;
 }
 
 // ──── Create / update connection ──────────────────────────────────────────────
@@ -181,7 +211,10 @@ export async function createConnectionFromAuthFile(
 ): Promise<{ connection: JsonRecord; created: boolean }> {
   // Duplicate detection by accountUUID (skipped when bootstrap failed)
   if (enriched.accountUUID) {
-    const existing = await findExistingClaudeConnection(enriched.accountUUID);
+    const existing = await findExistingClaudeConnection(
+      enriched.accountUUID,
+      enriched.organizationUUID
+    );
 
     if (existing) {
       if (!options.overwriteExisting) {
@@ -212,6 +245,7 @@ export async function createConnectionFromAuthFile(
           organizationName: enriched.organizationName,
           organizationType: enriched.organizationType,
           rateLimitTier: enriched.rateLimitTier,
+          ...(enriched.seatTier ? { seatTier: enriched.seatTier } : {}),
           scopes: enriched.scopes,
           subscriptionType: enriched.subscriptionType,
           bootstrapEmail: enriched.email,
@@ -258,6 +292,7 @@ export async function createConnectionFromAuthFile(
       organizationName: enriched.organizationName,
       organizationType: enriched.organizationType,
       rateLimitTier: enriched.rateLimitTier,
+      ...(enriched.seatTier ? { seatTier: enriched.seatTier } : {}),
       scopes: enriched.scopes,
       subscriptionType: enriched.subscriptionType,
       bootstrapEmail: enriched.email,
