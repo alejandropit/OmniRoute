@@ -700,6 +700,17 @@ export const OPENAPI_ENDPOINTS: OpenApiEndpoint[] = [
     hasRequestBody: false,
   },
   {
+    path: "/api/v1/models/health",
+    method: "GET",
+    summary: "Per-model pause state for the caller's key",
+    description:
+      "Read-only liveness view over the in-memory model lockout store. `ok` means no pause observed by this instance (not a health verdict); connection-level pauses live outside the store read here. Additive: leaves GET /v1/models and its cache untouched. `retry_after` carries the shortest remaining lockout in seconds, rounded up, only when `state` is `cooling`. One documented difference from the dispatch 429 `model_cooldown` rule: a model with one lockout-covered connection and one connection-level cooldown still reads `cooling` here, while the 429 requires every connection to carry a model cooldown.",
+    tag: "Models",
+    tags: ["Models"],
+    requiresAuth: true,
+    hasRequestBody: false,
+  },
+  {
     path: "/api/v1/models/query",
     method: "POST",
     summary: "Query a model shortlist",
@@ -920,6 +931,27 @@ export const OPENAPI_ENDPOINTS: OpenApiEndpoint[] = [
     hasRequestBody: false,
   },
   {
+    path: "/api/v1/quota-recoveries/{id}",
+    method: "DELETE",
+    summary: "Cancel a quota recovery ticket",
+    description: "",
+    tag: "V1 Quota Recoveries",
+    tags: ["V1 Quota Recoveries"],
+    requiresAuth: true,
+    hasRequestBody: false,
+  },
+  {
+    path: "/api/v1/quota-recoveries/{id}",
+    method: "GET",
+    summary: "Poll a quota recovery ticket",
+    description:
+      "Opt-in recovery of a non-streaming `POST /api/v1/chat/completions` or `POST /api/v1/responses` turn that failed with a terminal quota error. A request opts in with `x-omniroute-quota-recovery: auto`, `x-omniroute-session` and `x-omniroute-recovery-turn` (each `[A-Za-z0-9._:-]{1,128}`); it must be `stream: false`, carry no tools / tool history / `previous_response_id`, and not pin a connection. Recovery needs `STORAGE_ENCRYPTION_KEY` (the request is stored encrypted for up to 24 h). Instead of the quota error the caller then receives `202` with `recovery.poll` pointing here. Tickets are visible only to the API key that created them.",
+    tag: "V1 Quota Recoveries",
+    tags: ["V1 Quota Recoveries"],
+    requiresAuth: true,
+    hasRequestBody: false,
+  },
+  {
     path: "/api/v1/quotas/check",
     method: "GET",
     summary: "GET quotas › check",
@@ -1049,7 +1081,7 @@ export const OPENAPI_ENDPOINTS: OpenApiEndpoint[] = [
     method: "POST",
     summary: "Run a unified search",
     description:
-      "Searches the web, news, or X through a configured provider. Set `provider` to `xquik-search` to use Xquik for X search. The aliases `xquik` and `xquik_search` resolve to the same provider. AnySearch (`anysearch-search`, aliases `anysearch` / `anysearch_search`) provides free fallback-only web search.",
+      "Searches the web, news, or X through a configured provider. Set `provider` to `xquik-search` to use Xquik for X search. The aliases `xquik` and `xquik_search` resolve to the same provider. AnySearch (`anysearch-search`, aliases `anysearch` / `anysearch_search`) provides free fallback-only web search. Alternatively, set `model` to a saved priority/fill-first combo name. Only search-capable targets are attempted, in configured order. `model` and `provider` are mutually exclusive.",
     tag: "Search",
     tags: ["Search"],
     requiresAuth: true,
@@ -1414,11 +1446,12 @@ export const OPENAPI_ENDPOINTS: OpenApiEndpoint[] = [
     path: "/api/v1/web/fetch",
     method: "POST",
     summary: "POST web › fetch",
-    description: "",
+    description:
+      "Fetch a URL with an explicit provider, native automatic selection, or a saved priority/fill-first combo in `model`. Mixed combos skip targets without a fetch executor. `model` and `provider` are mutually exclusive.",
     tag: "V1 Web",
     tags: ["V1 Web"],
-    requiresAuth: false,
-    hasRequestBody: false,
+    requiresAuth: true,
+    hasRequestBody: true,
   },
   {
     path: "/api/v1/ws",
