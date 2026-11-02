@@ -6,7 +6,7 @@
  * field of any row moves, and MODEL_CATALOG_INCLUDE_NAMES=false still strips
  * `name` everywhere.
  */
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -26,6 +26,29 @@ const v1ModelsCatalog = await import("../../src/app/api/v1/models/catalog.ts");
 const { withCatalogDisplayName } = await import("../../src/app/api/v1/models/catalogHelpers.ts");
 
 type CatalogRow = Record<string, unknown> & { id: string };
+
+const unexpectedNetworkRequests: string[] = [];
+
+// Names are local registry/DB data. Keep unrelated quota and image discovery
+// deterministic at the HTTP boundary, without replacing the catalog builder.
+async function catalogFixtureFetch(input: string | URL | Request): Promise<Response> {
+  const rawUrl = input instanceof Request ? input.url : String(input);
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch (error) {
+    unexpectedNetworkRequests.push(rawUrl);
+    throw error;
+  }
+  if (url.href === "https://api.z.ai/api/monitor/usage/quota/limit") {
+    return Response.json({ code: 200, success: true, data: { limits: [] } });
+  }
+  if (url.href === "https://aihorde.net/api/v2/status/models?type=image") {
+    return Response.json([]);
+  }
+  unexpectedNetworkRequests.push(url.href);
+  throw new Error(`Unexpected catalog request: ${url.origin}${url.pathname}`);
+}
 
 async function resetStorage() {
   core.resetDbInstance();
@@ -87,7 +110,14 @@ function rowById(rows: CatalogRow[], id: string): CatalogRow {
 }
 
 test.beforeEach(async () => {
+  unexpectedNetworkRequests.length = 0;
+  mock.method(globalThis, "fetch", catalogFixtureFetch);
   await resetStorage();
+});
+
+test.afterEach(() => {
+  mock.restoreAll();
+  assert.deepEqual(unexpectedNetworkRequests, [], "name tests must not use live services");
 });
 
 test.after(async () => {
